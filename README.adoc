@@ -1,0 +1,342 @@
+= Hands-On: Wie man eine Cordova-Anwendung als Android-Bibliothek bereitstellt
+Christof Brungräber <christof.brungraeber@eng-softwarelabs.de>
+v1.0, 2018-08-03
+:toc:
+:imagesdir: Images
+:homepage: https://www.eng-softwarelabs.de
+
+== TL;DR
+
+[.lead]
+Will man eine Cordova Anwendung nicht als für sich allein stehendes APK ausliefern sondern als Android-Bibliothek zur Verfügung stellen, bedient man sich der umfangreichen Anpassungsmöglichkeiten, die Cordova bietet. Durch dedizierte Hooks und daraus resultierende Anpassungen am plattform-spezifischen Buildsystem entsteht als Ziel-Artefakt eine Bibliothek, welche dann durch andere Host-Anwendungen verwendet werden kann.
+
+== Was ist Apache Cordova?
+
+https://cordova.apache.org/[Apache Cordova] ist ein Open-Source Framework zur Entwicklung von mobilen Applikationen. Diese werden mittels der Standard-Webtechnologien JavaScript, HTML und CSS implementiert und durch https://cordova.apache.org/docs/en/latest/guide/hybrid/webviews/index.html[WebViews] in native Anwendungen eingebettet. Man spricht bei diesem Ansatz auch von hybriden Mobilapplikationen. Grundsätzlich unterstützt Cordova verschiedene https://cordova.apache.org/docs/en/latest/guide/support/index.html[Ziel-Plattformen], welche aber durch einen Write-Once Ansatz dieselbe Codebasis verwenden (können).
+
+Da Cordova somit nur die Basis für die Entwicklungs- und Laufzeitumgebung zur Verfügung stellt, werden interessanterweise keine Entscheidungen bzgl. weiterer Frontend-Technologien oder der verwendeten Benutzeroberflächen-Elemente getroffen. Somit kann eine Cordova-Anwendung beispielsweise mittels https://angular.io/[Angular], https://reactjs.org/[React] oder https://vuejs.org/[Vue] realisiert werden und dabei https://ng-bootstrap.github.io[Boostrap], https://material-ui.com/[Material UI] oder auch https://framework7.io/vue/[Framework7] Komponenten verwenden.
+
+https://cordova.apache.org/plugins/[Plugins] ermöglichen einen über die Möglichkeiten von HTML hinausgehende Nutzung betriebssystemnahe Funktionalität wie den Zugriff auf Sensoren, Kameras oder das Dateisystem. Außerdem ist es möglich, bidirektionale Kommunikation zwischen der JavaScript-Laufzeit und der nativen Applikation durch ein Foreign Function Interface zu etablieren. Im Falle der Android Ziel-Plattform also zwischen JavaScript und Java.
+
+image::cordovaapparchitecture.png[Übersicht über die Architektur einer Cordova-Anwendung]
+
+== Eine Android-Bibliothek als Ziel-Artefakt
+
+Typischerweise werden nach dem Hinzufügen einer Ziel-Plattform in sich geschlossene Standalone Apps für eben diese Plattform durch Cordova erzeugt - unter Android also ein https://en.wikipedia.org/wiki/Android_application_package[APK].
+
+Im Folgenden wird am praktischen Beispiel ein Ansatz vorgestellt, wie eine Cordova-Anwendung als https://developer.android.com/studio/projects/android-library[Android-Bibliothek] bereitgestellt und die damit implementierte Benutzeroberfläche von anderen Host-Applikationen aus genutzt werden kann.
+
+Dies ist besonders dann nützlich, wenn eine Cordova-Anwendung bestimmte UI-getriebene, fachliche Teilfunktionalitäten implementiert, welche dann in einen oder mehrere größere Anwendungskontexte integriert werden sollen. Als Beispiel sei eine native Host-App einer dritten Partei erwähnt, welche den übergreifenden Anwedungsrahmen bildet und bei Bedarf das durch Cordova implementierte UI aufruft und resultierende Teil-Ergebnisse weiterverarbeitet.
+
+== Erste Schritte mit Cordova
+
+https://cordova.apache.org/#getstarted[Folgende Schritte] führen zur ersten Cordova-Anwendung, welche dann in den folgenden Kapiteln sukzessive erweitert wird. Dabei wird https://nodejs.org/de/[Node.js] bzw. der Paket-Manager https://www.npmjs.com/[NPM] vorausgesetzt. Diese installiert und aktualisiert man am einfachsten mit dem https://github.com/creationix/nvm#install-script[Node Version Manager] oder der passenden https://github.com/coreybutler/nvm-windows#node-version-manager-nvm-for-windows[Alternative für Windows]. Da sich dieser Artikel mit Android als Ziel-Plattform beschäftigt, werden außerdem das Android SDK sowie die damit https://cordova.apache.org/docs/en/latest/guide/platforms/android/index.html#installing-the-requirements[zusammenhängenden Abhängigkeiten] vorausgesetzt.
+
+[source,bash]
+----
+$ npm install -g cordova # <1>
+$ cordova help # <2>
+$ cordova create CordovaLib # <3>
+----
+<1> Cordova als globales NPM Modul installieren
+<2> Alle CLI Parameter in der Übersicht
+<3> Das Grundgerüst der Cordova-Anwendung erzeugen
+
+Die resultierende minimale Cordova-Anwendung befindet sich nun im korrespondierenden Verzeichnis `CordovaLib`.
+
+[source,bash]
+----
+$ cd CordovaLib
+$ find . -type f -print
+./.npmignore
+./res/README.md
+./res/screen/webos/screen-64.png
+... # <1>
+./config.xml <2>
+./www/index.html
+./www/css/index.css
+./www/js/index.js
+./www/img/logo.png
+./package.json
+./hooks/README.md
+----
+<1> Weitere plattform-spezifische Ressourcen
+<2> Die globale Konfigurationsdatei
+
+Die Funktionalität der App beschränkt sich auf eine einfache Darstellung bezüglich des https://cordova.apache.org/docs/de/latest/cordova/events/events.deviceready.html[Ladezustands] der Cordova API. 
+Ein zentrales Element ist neben der eigentlichen Anwendung im Unterverzeichnis `www` die https://cordova.apache.org/docs/de/latest/config_ref/[Konfigurationsdatei] `config.xml`, welche zahlreiche Aspekte der Verhaltensweise der Applikation definiert. 
+
+TIP: Es empfiehlt sich, transiente Verzeichnisse, welche durch nachfolgende Schritte erzeugt werden, von der Versionskontrolle auszuschließen:
+
+.CordovaLib/.gitignore
+[source]
+----
+include::CordovaLib/.gitignore[]
+----
+
+== Android als Ziel-Plattform
+
+Der zuvor erzeugten minimalen Anwendung wird nun die entsprechende Plattform hinzugefügt.
+
+[source,bash]
+----
+$ cd CordoaLib
+$ cordova platform add android
+Using cordova-fetch for cordova-android@~7.0.0
+Adding android project...
+Creating Cordova project for the Android platform:
+	Path: platforms/android
+	Package: io.cordova.hellocordova
+	Name: HelloCordova
+	Activity: MainActivity
+	Android target: android-26
+Subproject Path: CordovaLib
+Subproject Path: app
+Android project created with cordova-android@7.0.0
+Android Studio project detected
+Android Studio project detected
+Discovered plugin "cordova-plugin-whitelist" in config.xml. Adding it to the project
+Installing "cordova-plugin-whitelist" for android
+
+               This plugin is only applicable for versions of cordova-android greater than 4.0. If you have a previous platform version, you do *not* need this plugin since the whitelist will be built in.
+
+Adding cordova-plugin-whitelist to package.json
+Saved plugin info for "cordova-plugin-whitelist" to config.xml
+--save flag or autosave detected
+Saving android@~7.0.0 into config.xml file ...
+----
+
+Hierdurch werden Plattform-spezifische Verzeichnisse, Build-Direktiven sowie benötigte Abhängigkeiten im Unterverzeichnis `platforms` erstellt. 
+
+IMPORTANT: Diese flüchtigen Inhalte sollten nicht manuell verändert werden, da Änderungen mit dem oben genannten oder weiteren CLI Befehlen erneut überschrieben würden.
+
+[source,bash]
+----
+$ cd CordovaLib
+$ find ./platforms -type f -print
+./platforms/android/cordova/clean.bat
+./platforms/android/cordova/version.bat
+./platforms/android/cordova/android_sdk_version
+./platforms/android/cordova/run.bat
+./platforms/android/cordova/node_modules/plist/LICENSE
+... # <1>
+./platforms/android/cordova/check_reqs
+./platforms/android/cordova/log.bat
+./platforms/android/cordova/build.bat
+./platforms/android/cordova/clean
+./platforms/android/cordova/version
+./platforms/android/cordova/lib/install-device
+... # <2>
+./platforms/android/cordova/check_reqs.bat
+./platforms/android/cordova/log
+./platforms/android/cordova/build
+./platforms/android/cordova/defaults.xml
+./platforms/android/cordova/run
+./platforms/android/cordova/Api.js
+./platforms/android/cordova/loggingHelper.js
+./platforms/android/cordova/android_sdk_version.bat
+./platforms/android/app/build.gradle
+./platforms/android/app/src/main/res/mipmap-mdpi/icon.png
+... # <3>
+./platforms/android/app/src/main/AndroidManifest.xml
+./platforms/android/app/src/main/java/org/apache/cordova/whitelist/WhitelistPlugin.java
+./platforms/android/app/src/main/java/io/cordova/hellocordova/MainActivity.java
+./platforms/android/app/src/main/assets/www/index.html
+... # <4>
+./platforms/android/android.json
+./platforms/android/project.properties
+./platforms/android/platform_www/cordova.js
+./platforms/android/platform_www/cordova-js-src/exec.js
+./platforms/android/platform_www/cordova-js-src/plugin/android/app.js
+./platforms/android/platform_www/cordova-js-src/android/nativeapiprovider.js
+./platforms/android/platform_www/cordova-js-src/android/promptbasednativeapi.js
+./platforms/android/platform_www/cordova-js-src/platform.js
+./platforms/android/platform_www/cordova_plugins.js
+./platforms/android/.gitignore
+./platforms/android/build.gradle
+./platforms/android/CordovaLib/cordova.gradle
+./platforms/android/CordovaLib/AndroidManifest.xml
+./platforms/android/CordovaLib/project.properties
+./platforms/android/CordovaLib/build.gradle
+./platforms/android/CordovaLib/src/org/apache/cordova/CordovaPlugin.java
+... # <5>
+./platforms/android/settings.gradle
+./platforms/android/wrapper.gradle
+----
+<1> JavaScript Abhängigkeiten
+<2> Cordova Werkzeuge
+<3> Ressourcen
+<4> Plattform-unabängige Quellen
+<5> Plattform-spezifische Quellen
+
+Die Anwendung kann mit dem folgenden Befehl in der Debug-Variante übersetzt werden. Somit wird das Ziel-Artefakt `CordovaLib/platforms/android/app/build/outputs/apk/debug/app-debug.apk` erzeugt.
+
+[source,bash]
+----
+$ cd CordoaLib
+$ cordova build android
+Android Studio project detected
+ANDROID_HOME=/usr/local/Caskroom/android-sdk/3859397
+JAVA_HOME=/Library/Java/JavaVirtualMachines/jdk1.8.0_162.jdk/Contents/Home
+studio
+Starting a Gradle Daemon (subsequent builds will be faster)
+
+BUILD SUCCESSFUL in 4s
+1 actionable task: 1 executed
+Subproject Path: CordovaLib
+Subproject Path: app
+Starting a Gradle Daemon, 1 incompatible Daemon could not be reused, use --status for details
+...
+BUILD SUCCESSFUL in 15s
+47 actionable tasks: 47 executed
+Built the following apk(s):
+	/Users/aggregat/Documents/dev/eng/blog/CordovaLib/platforms/android/app/build/outputs/apk/debug/app-debug.apk
+----
+
+Auch das Ausführen der App im Emulator kann komfortabel über die https://cordova.apache.org/docs/de/latest/guide/cli/[Cordova-CLI] angestoßen werden.
+
+[source,bash]
+---
+$ cd CordoaLib
+$ cordova run android
+...
+Using apk: /Users/aggregat/Documents/dev/eng/blog/CordovaLib/platforms/android/app/build/outputs/apk/debug/app-debug.apk
+Package name: io.cordova.hellocordova
+INSTALL SUCCESS
+LAUNCH SUCCESS
+---
+
+image::emulatorscreenshot.png[Die Anwendung im Android-Emulator]
+
+== Der Weg zum Ziel
+
+Durch das obige Hinzufügen der Android-Plattform werden resultierende Gradle Build-Skripte und weitere Dateien erzeugt. Diese müssen angepasst werden um schlussendlich zu einer Android-Bibliothek als Ziel-Artefakt zu gelangen. Da es sich hier, wie bereits erwähnt, um flüchtige Inhalte handelt, werden plattform-spezifischen Anpassungen nicht manuell, sondern programmatisch und damit wiederholbar durch Veränderungen an der Cordova-Konfiguration  `config.xml` erzielt. Cordova bietet unter Anderem mittels https://cordova.apache.org/docs/de/latest/guide/appdev/hooks/index.html[Hooks] umfangreiche Möglichkeiten, den Build-Vorgang durch Skripte zu manipulieren.
+
+=== Anpassungen an der Konfiguration
+
+Die für die Erstellung der Bibliothek benötigten Änderungen und Hooks werden wie folgt vorgenommen:
+
+.CordovaLib/config.xml
+[source,xml]
+----
+include::CordovaLib/config.xml[]
+----
+<1> Anpassungen am Namensraum, Bezeichner der Aktivität sowie zusätzliche XML Namensräume
+<2> Anpassungen am Titel, Beschreibung, etc.
+<3> Die für die Erstellung der Bibliothek benötigten Änderungen und Hooks
+
+Im Besonderen werden drei Hooks definiert, welche in einer moderneren https://www.ecma-international.org/ecma-262/8.0/index.html[ES-Sprachvariante] implementiert sind und damit eine aktuelle Node.js Version voraussetzen.
+
+=== Aktionsskript: Manipulation des Android-Manifests
+
+Das folgende Aktionsskript entfernt Attribute aus dem Manifest, um nachgelagerte Konflikte beim Übersetzen der Host-Applikation im Zusammenspiel mit der bereitgestellten Bibliothek zu vermeiden.
+
+.CordovaLib/scripts/android/modify-manifest.js
+[source,javascript]
+----
+include::CordovaLib/scripts/android/modify-manifest.js[]
+----
+
+=== Aktionsskript: Manipulation der Build-Direktiven
+
+Das folgende Skript aktiviert primär die https://google.github.io/android-gradle-dsl/current/com.android.build.gradle.LibraryExtension.html[Android Library Extension] im `build.gradle`.
+
+.CordovaLib/scripts/android/modify-build-gradle.js
+[source,javascript]
+----
+include::CordovaLib/scripts/android/modify-build-gradle.js[]
+----
+
+=== Aktionsskript: Kopieren der Cordova-Quellen
+
+Das Kopieren der Cordova Basis-Quellen erfolgt durch das folgende Skript.
+
+.CordovaLib/scripts/android/copy-cordova-sources.js
+[source,javascript]
+----
+include::CordovaLib/scripts/android/copy-cordova-sources.js[]
+----
+
+=== Aktionsskript: Manipulation der Gradle-Properties
+
+Zu guter Letzt erfolgt noch das Umbenennen des Ziel-Artefakts durch das folgende Skript.
+
+.CordovaLib/scripts/android/gradle.properties
+[source,gradle]
+----
+include::CordovaLib/scripts/android/gradle.properties[]
+----
+
+=== Übersetzen der Android-Bibliothek
+
+Das Übersetzen der Android-Bibliothek wird nun mittels der Cordova-CLI angestoßen. Die zuvor erstellten, auf ein APK als Ziel-Artefakt ausgerichteten Inhalte werden jedoch zunächst gelöscht.
+
+[source,bash]
+----
+$ cd CordovaLib
+$ rm -rf ./platforms
+$ cordova build android
+Android Studio project detected
+ANDROID_HOME=/usr/local/Caskroom/android-sdk/3859397
+JAVA_HOME=/Library/Java/JavaVirtualMachines/jdk1.8.0_162.jdk/Contents/Home
+studio
+Starting a Gradle Daemon, 1 incompatible Daemon could not be reused, use --status for details
+...
+BUILD SUCCESSFUL in 5s
+36 actionable tasks: 36 executed
+Built the following apk(s):
+----
+
+Somit steht das Ziel-Artefakt `CordovaLib/platforms/android/app/build/outputs/aar/cordovalib-debug.aar` zur weiteren Verwendung zur Verfügung.
+
+[source,bash]
+----
+$ ls -alh CordoaLib/platforms/android/app/build/outputs/aar
+total 3416
+drwxr-xr-x  3 aggregat  staff    96B  2 Aug 15:29 .
+drwxr-xr-x  4 aggregat  staff   128B  2 Aug 15:29 ..
+-rw-r--r--  1 aggregat  staff   1,7M  2 Aug 15:29 cordovalib-debug.aar
+----
+
+== Verwenden der Android-Bibliothek in einer Host-Applikation
+
+Als Anwendungsrahmen dient beispielhaft beine minimale Android-App, welche durch Android Studio erzeugt wird.
+
+image::studioa.png[Neues Android Studio Projekt erstellen]
+
+Die im vorhergehenden Abschnitt übersetzte Bibliothek wird in das Projekt kopiert.
+
+[source,bash]
+----
+$ cp ./CordovaLib/platforms/android/app/build/outputs/aar/* ./HostApp/app/libs
+----
+
+Anpassungen am `build.gradle` fügen diese dem Projekt als https://developer.android.com/studio/build/dependencies[Abhängigkeit] im https://docs.gradle.org/current/userguide/repository_types.html[Dateisystem] hinzu.
+
+.HostApp/app/build.gradle
+[source,gradle]
+----
+include::HostApp/app/build.gradle[]
+----
+<1> Flat Repository Resolver
+<2> Die Bibliothek als Build-Abhängigkeit
+
+Das Layout der Host-Applikation wird noch durch einen einfachen Button erweitert, welcher dann dazu dient, die durch Cordova realisierte Benutzeroberfläche aufzurufen.
+
+image::studiob.png[Einfaches Layout mit einem Button]
+
+Die Erweiterung der Host-Applikation gestaltet sich denkbar einfach. Die in der Cordova-Bibliothek enthaltene Activity https://developer.android.com/training/basics/firstapp/starting-activity[wird durch einen Intent gestartet]. Es wir also eine Bindung zur Laufzeit zwischen zwei unterschiedlichen Komponenten realisiert - in diesem Fall zwischen der https://developer.android.com/reference/android/app/Activity[Activity] der Host- und der Activity der Cordova-App.
+
+.HostApp/app/src/main/java/de/engsoftwarelabs/hostapp/MainActivity.java
+[source,java]
+----
+include::HostApp/app/src/main/java/de/engsoftwarelabs/hostapp/MainActivity.java[]
+----
+
+Zur Demonstrationszwecken wird die Host-Applikation nun z.B. per Android Studio im Emulator ausgeführt.
+
+image::hostapp.gif[Die Cordova-Bibliothek wurde durch die Host-Applikation aufgerufen]
+
+== Zusammenfassung
+
+Cordova bietet umfangreiche Möglichkeiten, Anpassungen an der Konfiguration und damit an resultierenden plattform-spezifischen Build-Direktiven vorzunehmen. In diesem Artikel haben wir diese Möglichkeiten genutzt, um mit relativ geringem Aufwand eine Cordova-Anwendung als Android-Bibliothek zur Verfügung zu stellen.
